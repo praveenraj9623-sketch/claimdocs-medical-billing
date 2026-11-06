@@ -23,3 +23,10 @@ htmlcov/
 samples/private/
 # Generated example output
 examples/output/
+
+.env.*
+.streamlit/secrets.toml
+
+*.bak
+outputs/
+idp_data/

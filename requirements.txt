@@ -1,0 +1,4 @@
+-e .
+streamlit>=1.50,<2
+pandas>=2.1,<4
+portalocker>=3,<5

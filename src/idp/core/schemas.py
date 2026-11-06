@@ -16,7 +16,7 @@ Users can supply their own Pydantic models; these are reference implementations.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LineItem(BaseModel):
@@ -188,6 +188,12 @@ class MedicalClaim(BaseModel):
     total_allowed: float | None = None
     total_paid: float | None = None
     total_patient_responsibility: float | None = None
+
+    @field_validator("diagnosis_codes", mode="before")
+    @classmethod
+    def normalize_missing_diagnosis_codes(cls, value):
+        """Missing extracted codes become an empty list."""
+        return [] if value is None else value
 
 
 SCHEMA_REGISTRY: dict[str, type[BaseModel]] = {

@@ -36,6 +36,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "portalocker>=3,<5",
     "pydantic>=2.5",
     "typer>=0.12",
     "rich>=13.7",

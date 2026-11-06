@@ -31,7 +31,7 @@ Why not use the ExtractionCache?
 """
 from __future__ import annotations
 
-import fcntl
+import portalocker
 import json
 import logging
 import os
@@ -164,7 +164,7 @@ class CheckpointStore:
         with self.path.open("a") as f:
             # Acquire exclusive lock. Cross-process safe: flock(2)
             # locks the underlying inode, not the file descriptor.
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            portalocker.lock(f, portalocker.LOCK_EX)
             try:
                 f.write(line)
                 f.flush()
@@ -173,7 +173,7 @@ class CheckpointStore:
                 # could lose the just-written line.
                 os.fsync(f.fileno())
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                portalocker.unlock(f)
 
     def archive(self) -> Path | None:
         """Archive the current ledger and start fresh.
