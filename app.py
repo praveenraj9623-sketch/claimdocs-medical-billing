@@ -11,6 +11,9 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import perf_counter
+
+from claimdocs_ocr import MAX_BYTES, SUPPORTED_SUFFIXES, prepare_document
 
 import pandas as pd
 import streamlit as st
@@ -20,7 +23,6 @@ from pydantic import AliasChoices, Field, ValidationError, field_validator, mode
 from idp.core.schemas import SCHEMA_REGISTRY, MedicalClaim, MedicalClaimLineItem
 
 ROOT = Path(__file__).resolve().parent
-MAX_BYTES = 5 * 1024 * 1024
 SAMPLE = """SYNTHETIC MEDICAL CLAIM - DEMONSTRATION ONLY
 No real patient information.
 Claim number: DEMO-1001
@@ -245,25 +247,19 @@ def extract_claim(data, filename, key, model):
     from idp.pipeline.pipeline import Pipeline
 
     suffix = Path(filename).suffix.lower()
-    if suffix not in {".pdf", ".txt"}:
-        raise ValueError("Choose a PDF or TXT document.")
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise ValueError("Choose a PDF, TXT, PNG, JPEG or TIFF document.")
     if not data or len(data) > MAX_BYTES:
         raise ValueError("Choose a non-empty document under 5 MB.")
     with TemporaryDirectory(prefix="claimdocs-") as folder:
         path = Path(folder) / ("document" + suffix)
         path.write_bytes(data)
-        if suffix == ".pdf":
-            import pdfplumber
-            with pdfplumber.open(path) as pdf:
-                if len(pdf.pages) > 10:
-                    raise ValueError("For this demo, upload a PDF of at most 10 pages.")
-                if not any((page.extract_text() or "").strip() for page in pdf.pages):
-                    raise ValueError("This PDF has no readable text. Scanned-image OCR is not enabled in this version.")
-        elif not data.decode("utf-8-sig", errors="replace").strip():
-            raise ValueError("The text document is empty.")
+        reading_started = perf_counter()
+        prepared = prepare_document(path)
+        reading_seconds = perf_counter() - reading_started
 
         backend = make_backend(key, model)
-        result = Pipeline(backend=backend, schema=ClaimDocsClaim, parser="pdfplumber" if suffix == ".pdf" else "plain", retry=False, cache=False).run(Document.from_path(path))
+        result = Pipeline(backend=backend, schema=ClaimDocsClaim, parser=prepared, retry=False, cache=False).run(Document.from_path(path))
         errors = [str(e) for e in result.document.errors if not str(e).startswith("extract_chunked:")]
         if backend.last_failure:
             raise ValueError(backend.last_failure)
@@ -278,11 +274,15 @@ def extract_claim(data, filename, key, model):
             raise ValueError("No claim fields could be extracted. This may be an instruction sheet or an unsupported document; no record was created.")
         report = result.to_dict()
         report["source_path"] = filename
+        reading = {"ocr_engine": "Tesseract" if "tesseract-ocr" in prepared.methods.values() else None,
+                   "pages": [{"page": number, "method": method} for number, method in prepared.methods.items()],
+                   "seconds": reading_seconds}
+        report["input_processing"] = reading
         return {"original": claim, "current": copy.deepcopy(claim), "report": report,
-                "pages": [{"page": p.page_number, "text": p.text} for p in result.document.pages],
+                "pages": [{"page": p.page_number, "text": p.text, "reading_method": prepared.methods[p.page_number]} for p in result.document.pages],
                 "filename": filename, "model": model, "calls": backend.calls,
-                "requests": backend.requests, "notes": backend.notes,
-                "seconds": sum(t.seconds for t in result.timings), "reviewed": False,
+                "requests": backend.requests, "notes": [*prepared.notes, *backend.notes],
+                "seconds": reading_seconds + sum(t.seconds for t in result.timings), "input_processing": reading, "reviewed": False,
                 "processed_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -304,8 +304,8 @@ def main():
         st.caption("A configured key is checked when you extract a document.")
         st.divider()
         st.write("**Supported documents**")
-        st.write("Text-based PDF · TXT")
-        st.caption("Up to 5 MB and 10 PDF pages. Scanned-image OCR is not enabled yet.")
+        st.write("PDF · TXT · PNG · JPEG · TIFF")
+        st.caption("Up to 5 MB and 10 PDF/TIFF pages; images up to 20 MP per page. Scanned pages use English Tesseract OCR on this app server.")
         st.divider()
         st.caption("Use synthetic demonstration documents. Processing sends document content to Groq.")
 
@@ -316,7 +316,7 @@ def main():
         data, filename = SAMPLE.encode("utf-8"), "synthetic_medical_claim.txt"
         st.caption("A fictional ambulance claim with two service lines and a $1,500 total.")
     else:
-        uploaded = st.file_uploader("Choose a billing document", type=["pdf", "txt"])
+        uploaded = st.file_uploader("Choose a billing document", type=["pdf", "txt", "png", "jpg", "jpeg", "tif", "tiff"])
         if uploaded is None:
             st.info("Upload a document to begin.")
             st.stop()
@@ -403,7 +403,7 @@ def main():
                 st.error("Corrections were not saved. Check field types and enter finite numbers; leave unknown values blank.")
                 with st.expander("Field validation details"):
                     st.code(str(error))
-        export = {"filename": result["filename"], "model": result["model"], "processed_at": result["processed_at"], "human_reviewed": result["reviewed"], "reviewed_at": result.get("reviewed_at"), "original_extraction": result["original"], "reviewed_extraction": result["current"], "validation_findings": findings(result["current"]), "processing_notes": result.get("notes", [])}
+        export = {"filename": result["filename"], "model": result["model"], "processed_at": result["processed_at"], "human_reviewed": result["reviewed"], "reviewed_at": result.get("reviewed_at"), "original_extraction": result["original"], "reviewed_extraction": result["current"], "validation_findings": findings(result["current"]), "processing_notes": result.get("notes", []), "input_processing": result.get("input_processing", {})}
         st.download_button("Download complete record (JSON)", json.dumps(export, indent=2), "claimdocs_record.json", mime="application/json")
         csv_rows = []
         for item in claim.get("line_items") or [{}]:
@@ -417,6 +417,8 @@ def main():
         st.caption("Extracted source text for manual verification. Field-level citations are not implemented in this version.")
         for page in result["pages"]:
             with st.expander(f"Page {page['page']}", expanded=True):
+                if page.get("reading_method") == "tesseract-ocr":
+                    st.caption("Recognised with Tesseract OCR. Verify against the original image; this text may contain recognition errors.")
                 st.text(page["text"] or "No text extracted.")
 
 
