@@ -13,7 +13,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from claimdocs_ocr import MAX_BYTES, SUPPORTED_SUFFIXES, prepare_document
+from claimdocs_ocr import MAX_BYTES, MAX_TEXT_CHARS, SUPPORTED_SUFFIXES, prepare_document
+from claimdocs_eob import read_eob_tables, reconcile_eob, table_context
 
 import pandas as pd
 import streamlit as st
@@ -88,6 +89,11 @@ Do not turn missing charges into 0. Do not invent a patient, provider, NPI or di
 For an EOB, provider charges/billed amount -> charged_amount; allowed charges -> allowed_amount;
 paid by insurer/plan liability -> paid_amount; what you owe -> patient_responsibility.
 Use these mappings for each service row, and corresponding total_* keys only for printed totals.
+Preserve table columns, including multi-line headers: Co Pay, Deductible and Coinsurance
+are NOT Paid by Insurer or What You Owe. Read each named column independently.
+An explicit $0.00 is zero; a blank or absent payment/responsibility is null.
+Use the named native PDF EOB table cells when available; they repeat source rows,
+not additional services. Keep printed totals separate from service rows.
 Do not include subtotal, total, balance summary, headings or explanatory examples as service rows.
 Use actual service dates, not the statement date. Normalize unambiguous dates to YYYY-MM-DD.
 If there are multiple service dates, leave the overall date_of_service null and keep line dates.
@@ -222,21 +228,29 @@ def findings(claim):
             rows.append({"Level": "Review", "Check": f"Service line {i}", "Finding": "Charge not extracted; no zero or inferred amount has been substituted."})
         if not item.get("description"):
             rows.append({"Level": "Review", "Check": f"Service line {i}", "Finding": "Service description not extracted; check the source."})
-    amounts = [item.get("charged_amount") for item in lines]
-    total = claim.get("total_charged")
-    try:
-        money = [Decimal(str(value)) for value in amounts if value is not None]
-        if any(not amount.is_finite() or amount < 0 for amount in money):
-            rows.append({"Level": "Error", "Check": "Charges", "Finding": "A line charge is negative or non-finite."})
-        if total is not None:
-            decimal_total = Decimal(str(total))
-            if not decimal_total.is_finite() or decimal_total < 0:
-                rows.append({"Level": "Error", "Check": "Total charged", "Finding": "Total charge must be finite and non-negative."})
-            elif lines and len(money) == len(lines) and all(v.is_finite() for v in money):
-                if abs(sum(money) - decimal_total) > Decimal("0.01"):
-                    rows.append({"Level": "Error", "Check": "Line-item total", "Finding": "Sum of line charges differs from the stated total."})
-    except (InvalidOperation, TypeError, ValueError):
-        rows.append({"Level": "Error", "Check": "Amounts", "Finding": "An amount is not a valid number."})
+    for field, total_field, label in [
+        ("charged_amount", "total_charged", "charged"),
+        ("allowed_amount", "total_allowed", "allowed"),
+        ("paid_amount", "total_paid", "paid"),
+        ("patient_responsibility", "total_patient_responsibility", "patient responsibility"),
+    ]:
+        amounts = [item.get(field) for item in lines]
+        total = claim.get(total_field)
+        try:
+            money = [Decimal(str(value)) for value in amounts if value is not None]
+            if any(not amount.is_finite() or amount < 0 for amount in money):
+                rows.append({"Level": "Error", "Check": label.capitalize(), "Finding": f"A line {label} amount is negative or non-finite."})
+            if total is not None:
+                decimal_total = Decimal(str(total))
+                if not decimal_total.is_finite() or decimal_total < 0:
+                    rows.append({"Level": "Error", "Check": f"Total {label}", "Finding": "Total must be finite and non-negative."})
+                elif lines and len(money) == len(lines) and all(v.is_finite() for v in money):
+                    if abs(sum(money) - decimal_total) > Decimal("0.01"):
+                        rows.append({"Level": "Error", "Check": "Line-item total" if field == "charged_amount" else f"{label.capitalize()} total", "Finding": f"Sum of line {label} amounts differs from the stated total."})
+                elif lines:
+                    rows.append({"Level": "Review", "Check": f"{label.capitalize()} total", "Finding": "Some line amounts are unknown; the printed total cannot be reconciled with every service row."})
+        except (InvalidOperation, TypeError, ValueError):
+            rows.append({"Level": "Error", "Check": "Amounts", "Finding": "An amount is not a valid number."})
     if not lines:
         rows.append({"Level": "Review", "Check": "Service lines", "Finding": "No service lines were extracted."})
     return rows
@@ -256,6 +270,13 @@ def extract_claim(data, filename, key, model):
         path.write_bytes(data)
         reading_started = perf_counter()
         prepared = prepare_document(path)
+        eob_tables = read_eob_tables(prepared.parsed)
+        context = table_context(eob_tables)
+        if len(prepared.parsed["text"]) + len(context) > MAX_TEXT_CHARS:
+            raise ValueError("Extracted text and table cells exceed the 200,000-character limit. Split the document into smaller files.")
+        # py-idp only forwards raw_text to the LLM; its parsed tables are not
+        # otherwise included. Preserve named source cells inside <document>.
+        prepared.parsed["text"] += context
         reading_seconds = perf_counter() - reading_started
 
         backend = make_backend(key, model)
@@ -270,6 +291,9 @@ def extract_claim(data, filename, key, model):
         except ValidationError as error:
             fields = ", ".join(".".join(map(str, e["loc"])) for e in error.errors())
             raise ValueError("The model returned invalid field types: " + fields + ". Try extraction again.") from None
+        model_claim = copy.deepcopy(claim)
+        claim, amount_evidence, amount_notes = reconcile_eob(claim, eob_tables)
+        claim = ClaimDocsClaim.model_validate(claim).model_dump(mode="json")
         if not any(value not in (None, "", []) for value in claim.values()):
             raise ValueError("No claim fields could be extracted. This may be an instruction sheet or an unsupported document; no record was created.")
         report = result.to_dict()
@@ -278,10 +302,13 @@ def extract_claim(data, filename, key, model):
                    "pages": [{"page": number, "method": method} for number, method in prepared.methods.items()],
                    "seconds": reading_seconds}
         report["input_processing"] = reading
+        report["reconciled_extraction"] = claim
+        report["source_amount_checks"] = amount_evidence
         return {"original": claim, "current": copy.deepcopy(claim), "report": report,
+                "model_extraction": model_claim, "source_amount_checks": amount_evidence,
                 "pages": [{"page": p.page_number, "text": p.text, "reading_method": prepared.methods[p.page_number]} for p in result.document.pages],
                 "filename": filename, "model": model, "calls": backend.calls,
-                "requests": backend.requests, "notes": [*prepared.notes, *backend.notes],
+                "requests": backend.requests, "notes": [*prepared.notes, *backend.notes, *amount_notes],
                 "seconds": reading_seconds + sum(t.seconds for t in result.timings), "input_processing": reading, "reviewed": False,
                 "processed_at": datetime.now(timezone.utc).isoformat()}
 
@@ -364,6 +391,11 @@ def main():
                 st.write(f"**{label}:** {claim.get(field) or 'Not extracted'}")
         st.subheader("Service lines")
         st.dataframe(pd.DataFrame(claim.get("line_items") or []), use_container_width=True, hide_index=True)
+        totals = []
+        for label, field in [("Charged", "total_charged"), ("Allowed", "total_allowed"), ("Paid by insurer", "total_paid"), ("Patient responsibility", "total_patient_responsibility")]:
+            value = claim.get(field)
+            totals.append(f"{label}: ${value:,.2f}" if value is not None else f"{label}: Not extracted")
+        st.caption("Printed claim totals — " + " · ".join(totals))
         st.subheader("Validation checks")
         if issues:
             st.dataframe(pd.DataFrame(issues), use_container_width=True, hide_index=True)
@@ -383,7 +415,11 @@ def main():
                     edited[field] = value.strip() or None
             codes = st.text_input("Diagnosis codes (comma separated)", value=", ".join(claim.get("diagnosis_codes") or []))
             edited["diagnosis_codes"] = [code.strip() for code in codes.split(",") if code.strip()]
-            edited["total_charged"] = st.number_input("Total charged (USD)", value=float(amount) if amount is not None else None, step=0.01)
+            total_columns = st.columns(2)
+            for index, (label, field) in enumerate([("Total charged (USD)", "total_charged"), ("Total allowed (USD)", "total_allowed"), ("Total paid by insurer (USD)", "total_paid"), ("Total patient responsibility (USD)", "total_patient_responsibility")]):
+                with total_columns[index % 2]:
+                    value = claim.get(field)
+                    edited[field] = st.number_input(label, value=float(value) if value is not None else None, step=0.01)
             columns = ["description", "service_code", "service_date", "charged_amount", "allowed_amount", "paid_amount", "patient_responsibility"]
             frame = pd.DataFrame(claim.get("line_items") or []).reindex(columns=columns)
             for column in ["charged_amount", "allowed_amount", "paid_amount", "patient_responsibility"]:
@@ -404,17 +440,19 @@ def main():
                 with st.expander("Field validation details"):
                     st.code(str(error))
         export = {"filename": result["filename"], "model": result["model"], "processed_at": result["processed_at"], "human_reviewed": result["reviewed"], "reviewed_at": result.get("reviewed_at"), "original_extraction": result["original"], "reviewed_extraction": result["current"], "validation_findings": findings(result["current"]), "processing_notes": result.get("notes", []), "input_processing": result.get("input_processing", {})}
+        export["model_extraction"] = result.get("model_extraction", result["original"])
+        export["source_amount_checks"] = result.get("source_amount_checks", [])
         st.download_button("Download complete record (JSON)", json.dumps(export, indent=2), "claimdocs_record.json", mime="application/json")
         csv_rows = []
         for item in claim.get("line_items") or [{}]:
-            csv_rows.append({"claim_number": claim.get("claim_number"), "patient_name": claim.get("patient_name"), "provider_name": claim.get("provider_name"), "insurer_name": claim.get("insurer_name"), "total_charged": claim.get("total_charged"), **item})
+            csv_rows.append({"claim_number": claim.get("claim_number"), "patient_name": claim.get("patient_name"), "provider_name": claim.get("provider_name"), "insurer_name": claim.get("insurer_name"), **{field: claim.get(field) for field in ("total_charged", "total_allowed", "total_paid", "total_patient_responsibility")}, **item})
         csv = pd.DataFrame(csv_rows).to_csv(index=False)
         st.download_button("Download service lines (CSV)", csv, "claimdocs_service_lines.csv", mime="text/csv")
         with st.expander("Original extracted record"):
             st.json(result["original"])
 
     with sources:
-        st.caption("Extracted source text for manual verification. Field-level citations are not implemented in this version.")
+        st.caption("Extracted source text for manual verification. Matched native EOB financial-cell locations are included in the JSON export; other fields do not have field-level citations.")
         for page in result["pages"]:
             with st.expander(f"Page {page['page']}", expanded=True):
                 if page.get("reading_method") == "tesseract-ocr":

@@ -10,10 +10,10 @@ Billing staff need named claim fields and service lines instead of manually copy
 
 ## How it works
 
-1. Choose **Try a sample** or upload a text-based PDF/TXT.
+1. Choose **Try a sample** or upload a supported PDF, TXT or image.
 2. Validate the input; read native PDF/TXT text, or recognise scanned pages and supported images with local Tesseract OCR.
 3. Send the document and billing instructions to the configured Groq model.
-4. Validate the candidate fields with Pydantic and show amount/missing-field checks.
+4. Validate candidate fields with Pydantic; for supported native EOB tables, check amounts against uniquely matched source cells. Show financial-total and missing-field checks.
 5. Review source text, edit the stored record, and download JSON or service-line CSV.
 
 Review edits reuse the extracted record without another model call. Exports do not submit or approve an insurance claim, and are not protected by ClaimVoice's separate mandatory approval gate.
@@ -24,6 +24,7 @@ Review edits reuse the extracted record without another model call. Exports do n
 - Claim, patient, provider, insurer, diagnosis and service-line fields, with distinct charged, allowed, paid and patient-responsibility amounts.
 - Missing facts remain unknown. Null is not zero; no extracted diagnosis is not proof that no diagnosis exists.
 - Schema validation, decimal amount-consistency checks, source review and correction.
+- Native EOB tables with explicit service, charged, allowed, insurer-paid and patient-responsibility columns retain named cells in the extraction input. When every service row matches uniquely, printed amounts replace conflicting model values, with both versions and cell locations preserved in JSON. Ambiguous matches stay flagged for review. Printed totals are not inferred by adding rows. See [EOB amount handling](docs/claimdocs-eob-amounts.md).
 
 OCR supports clear, upright printed English text. PDF pages retain their page numbers: native text is reused, while pages without a usable text layer or with a sparse header over an image use Tesseract. EXIF orientation is honoured for image uploads. OCR is bounded to 20 seconds per page and 90 seconds per document. Recognition can misread codes, names, dates, tables and decimal amounts; human source comparison remains required. Handwriting, arbitrary rotation, damaged scans and accurate reconstruction of every EOB/table layout are not guaranteed. Input limits are not a concurrency or throughput benchmark.
 
