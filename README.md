@@ -22,6 +22,7 @@ Review edits reuse the extracted record without another model call. Exports do n
 
 - Text-based or scanned **PDF**, **TXT**, **PNG**, **JPEG** and **TIFF**. Limits: **5 MB**, **10 PDF/TIFF pages**, **20 megapixels per uploaded image page** and **200,000 extracted characters**.
 - Claim, patient, provider, insurer, diagnosis and service-line fields, with distinct charged, allowed, paid and patient-responsibility amounts.
+- Itemized statements retain Visit ID/account number, visit balance and signed payments/adjustments separately. Service rows include procedure, revenue and NDC codes, quantity and line-specific diagnoses. Supported native table layouts use coordinate-aligned cells to avoid shifting a later row's code into an earlier blank; unambiguous matches and corrections are recorded in JSON. See [statement fields and checks](docs/claimdocs-statement-fields.md).
 - Missing facts remain unknown. Null is not zero; no extracted diagnosis is not proof that no diagnosis exists.
 - Schema validation, decimal amount-consistency checks, source review and correction.
 - Native EOB tables with explicit service, charged, allowed, insurer-paid and patient-responsibility columns retain named cells in the extraction input. When every service row matches uniquely, printed amounts replace conflicting model values, with both versions and cell locations preserved in JSON. Ambiguous matches stay flagged for review. Printed totals are not inferred by adding rows. See [EOB amount handling](docs/claimdocs-eob-amounts.md).
@@ -77,6 +78,7 @@ The OCR update adds real-Tesseract synthetic fixture checks and an offline extra
 
 - [app.py](app.py): billing interface, schema handling, checks, correction and export.
 - [claimdocs_ocr.py](claimdocs_ocr.py): bounded app-specific input preparation and OCR.
+- [claimdocs_statement.py](claimdocs_statement.py): native statement field/row checks, distinct identifiers, balances and adjustments.
 - [packages.txt](packages.txt): Streamlit Cloud system OCR dependencies.
 - [src/idp](src/idp): inherited processing library and compatibility changes.
 - [examples](examples/README.md): optional upstream examples; some use mocks or other providers.
