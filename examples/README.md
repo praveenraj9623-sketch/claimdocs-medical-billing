@@ -1,3 +1,7 @@
+# Upstream py-idp examples
+
+> These inherited library examples are separate from [ClaimDocs](../README.md). Mock outputs and receipt/invoice benchmarks do not establish medical-claim accuracy. The browser app uses the configured Groq path; provider-specific examples are optional.
+
 # Examples
 
 Copy-pasteable scripts that demonstrate py-idp's main use cases. Run any
@@ -31,7 +35,7 @@ This means every example is runnable in a clean venv with no credentials — the
 
 ## Adding a new example
 
-1. Pick a `NN_` number that doesn't conflict (next available: 06).
+1. Pick a `NN_` number that doesn't conflict (check the existing numbered scripts before choosing the next number).
 2. Add the AGPL-3.0 + commercial SPDX header at the top (the boilerplate from the existing examples).
 3. Add the `logging.getLogger("idp").setLevel(logging.CRITICAL)` line so the offline output is readable.
 4. End the script with a one-line `print()` note explaining the MockBackend limitation when applicable.

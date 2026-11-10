@@ -1,3 +1,7 @@
+# Upstream mock notebooks
+
+> These notebooks demonstrate the reused library with mocks. They do not make live ClaimDocs extraction calls or measure its accuracy. Use the [application README](../../README.md) for the billing demo.
+
 # py-idp example notebooks
 
 Three Jupyter notebooks that walk through py-idp from "freshly installed"

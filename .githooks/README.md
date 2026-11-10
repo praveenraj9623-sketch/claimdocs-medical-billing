@@ -1,3 +1,7 @@
+# Optional upstream Git hooks
+
+> These inherited development hooks are not needed to run the ClaimDocs browser demo. See the current [application README](../README.md) for setup. Hook configuration is per clone.
+
 # Git hooks
 
 This directory contains project-wide git hooks that are **tracked in the

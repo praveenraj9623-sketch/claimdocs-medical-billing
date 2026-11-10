@@ -1,3 +1,7 @@
+# Upstream receipt-evaluation fixtures
+
+> This material evaluates the reused Receipt schema, not ClaimDocs medical claims. Preserve the bundled dataset licences and attribution. Its scores must not be reported as ClaimDocs accuracy. See the [application README](../../../../../README.md).
+
 # CORD eval dataset (py-idp v0.4)
 
 This directory is a **synthetic-but-faithful** CORD-shape eval set

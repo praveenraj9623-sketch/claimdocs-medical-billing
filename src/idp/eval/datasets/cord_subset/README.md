@@ -1,3 +1,7 @@
+# Upstream synthetic receipt subset
+
+> These five synthetic receipt fixtures exercise the upstream schema and pipeline, not the ClaimDocs billing app. Mock scores are not evidence of live extraction quality. Preserve the licensing note below. See the [application README](../../../../../README.md).
+
 # CORD-subset eval dataset
 
 A 5-receipt hand-curated subset modeled on the
